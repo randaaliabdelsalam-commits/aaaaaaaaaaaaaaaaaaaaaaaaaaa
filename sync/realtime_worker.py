@@ -227,11 +227,20 @@ class RealtimeWorker:
                 if e.status_code != 404:
                     raise
                 zoho_map.delete(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code)
-
-        new_id = self._zoho.add_record(self._form_items, payload,
-                                       priority=ZohoTrafficGate.REALTIME)
-        zoho_map.upsert(cursor, "ITEMS", new_id,
-                        k_cp=cp, k_yr=yr, k_code=code)
+        if not zoho_map.claim(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code):
+            return
+        try:
+            resolved = self._resolve_item(cp, yr, code)
+            if resolved:
+                self._zoho.update_record(self._form_items, resolved, payload,
+                                         priority=ZohoTrafficGate.REALTIME)
+                zoho_map.upsert(cursor, "ITEMS", resolved, k_cp=cp, k_yr=yr, k_code=code)
+                return
+            new_id = self._zoho.add_record(self._form_items, payload,
+                                           priority=ZohoTrafficGate.REALTIME)
+            zoho_map.upsert(cursor, "ITEMS", new_id, k_cp=cp, k_yr=yr, k_code=code)
+        finally:
+            zoho_map.release_claim(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code)
 
     def _sync_branches(self, cursor, ev: dict[str, Any]) -> None:
         cp, yr, bn = ev["k_cp"], ev["k_yr"], ev["k_bn"]
@@ -263,8 +272,27 @@ class RealtimeWorker:
                 if e.status_code != 404:
                     raise
                 zoho_map.delete(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn)
+        if not zoho_map.claim(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn):
+            return
+        try:
+            resolved = self._resolve_branch(cp, yr, bn)
+            if resolved:
+                self._zoho.update_record(self._form_branches, resolved, payload,
+                                         priority=ZohoTrafficGate.REALTIME)
+                zoho_map.upsert(cursor, "GRBRF", resolved, k_cp=cp, k_yr=yr, k_bn=bn)
+                return
+            new_id = self._zoho.add_record(self._form_branches, payload,
+                                           priority=ZohoTrafficGate.REALTIME)
+            zoho_map.upsert(cursor, "GRBRF", new_id, k_cp=cp, k_yr=yr, k_bn=bn)
+        finally:
+            zoho_map.release_claim(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn)
 
-        new_id = self._zoho.add_record(self._form_branches, payload,
-                                       priority=ZohoTrafficGate.REALTIME)
-        zoho_map.upsert(cursor, "GRBRF", new_id,
-                        k_cp=cp, k_yr=yr, k_bn=bn)
+    def _resolve_item(self, cp: int, yr: int, code: str) -> str | None:
+        crit = f"(Company_Number == {cp}) && (Year == {yr}) && (Item_Code == \"{code}\")"
+        return self._zoho.find_record_by_criteria(self._form_items, crit,
+                                                  priority=ZohoTrafficGate.REALTIME)
+
+    def _resolve_branch(self, cp: int, yr: int, bn: int) -> str | None:
+        crit = f"(Company_Number == {cp}) && (Year == {yr}) && (Branch_Number == {bn})"
+        return self._zoho.find_record_by_criteria(self._form_branches, crit,
+                                                  priority=ZohoTrafficGate.REALTIME)

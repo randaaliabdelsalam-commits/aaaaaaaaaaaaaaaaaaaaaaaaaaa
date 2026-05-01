@@ -115,3 +115,7 @@ class FakeZoho:
 
     def delete_record(self, report, record_id, priority):
         self.calls.append(("delete", report, record_id, priority))
+
+    def find_record_by_criteria(self, report, criteria, priority):
+        self.calls.append(("find", report, criteria, priority))
+        return None

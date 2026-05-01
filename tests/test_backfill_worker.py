@@ -35,7 +35,10 @@ def test_items_backfill_paginates_until_empty(monkeypatch):
     # zoho_map lookup x2 (not present), upsert x2, checkpoint update x2
     for _ in range(2):
         conn.register("FROM ZOHO_MAP", lambda *_: ([], []))
+        conn.register("MERGE INTO ZOHO_SYNC_CLAIMS", lambda *_: None)
+        conn.register("/report/", lambda *_: (["data"], [()]))
         conn.register("MERGE INTO ZOHO_MAP", lambda *_: None)
+        conn.register("DELETE FROM ZOHO_SYNC_CLAIMS", lambda *_: None)
         conn.register("UPDATE BACKFILL_CHECKPOINT", lambda *_: None)
     # second items page (empty) -> finished
     conn.register("FROM   sk1mf", lambda *_: (ITEMS_COLS, []))
@@ -55,14 +58,14 @@ def test_items_backfill_paginates_until_empty(monkeypatch):
     assert sum(1 for c in zoho.calls if c[0] == "add") == 2
 
 
-def test_dedup_skips_already_mapped_rows():
+def test_mapped_row_updates_instead_of_add():
     conn = FakeConnection()
     conn.register("FROM BACKFILL_CHECKPOINT",
                   lambda *_: (["last_cp", "last_yr", "last_code"],
                               [(None, None, None)]))
     conn.register("FROM   sk1mf",
                   lambda *_: (ITEMS_COLS, [_items_row(1, 2025, "A")]))
-    # already mapped -> skip add
+    # already mapped -> update existing id
     conn.register("FROM ZOHO_MAP",
                   lambda *_: (["zoho_record_id"], [("REC-1",)]))
     conn.register("UPDATE BACKFILL_CHECKPOINT", lambda *_: None)
@@ -81,4 +84,4 @@ def test_dedup_skips_already_mapped_rows():
     w = BackfillWorker(FakePool(conn), zoho, "Items_Data", "Branches_Codes",
                        page_size=10)
     w.run()
-    assert zoho.calls == []
+    assert zoho.calls[0][0] == "update"
