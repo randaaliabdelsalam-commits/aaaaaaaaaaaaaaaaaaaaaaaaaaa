@@ -96,7 +96,7 @@ class ZohoClient:
     def _call(
         self, method: str, url: str, body: dict | None, priority: int
     ) -> dict:
-        from .connectivity import ping_internet, wait_for_internet, escalating_backoff
+        from .connectivity import check_connectivity, wait_for_internet, escalating_backoff
 
         attempt = 0
         while True:
@@ -125,7 +125,7 @@ class ZohoClient:
                 log.warning(
                     "network error on %s %s (attempt %d): %s", method, url, attempt, e,
                 )
-                if not ping_internet():
+                if not check_connectivity()[0]:
                     wait_for_internet(label="zoho-client")
                 else:
                     delay = escalating_backoff(attempt)
@@ -186,7 +186,7 @@ class ZohoClient:
                     "Zoho %s %s returned %d (attempt %d), retrying…",
                     method, url, sc, attempt,
                 )
-                if not ping_internet():
+                if not check_connectivity()[0]:
                     wait_for_internet(label="zoho-client")
                 else:
                     delay = escalating_backoff(attempt)

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import requests
 
+from .connectivity import check_connectivity, escalating_backoff, wait_for_internet
+
 log = logging.getLogger(__name__)
 
 
@@ -66,7 +68,28 @@ class TokenManager:
             "grant_type": "refresh_token",
         }
 
-        resp = self._session.post(url, params=params, timeout=30)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                resp = self._session.post(url, params=params, timeout=30)
+            except requests.RequestException as exc:
+                log.warning("token refresh network error (attempt %d): %s", attempt, exc)
+                if not check_connectivity()[0]:
+                    wait_for_internet(label="token-refresh")
+                else:
+                    time.sleep(escalating_backoff(attempt))
+                continue
+
+            if 500 <= resp.status_code < 600:
+                log.warning("token refresh returned %d (attempt %d)", resp.status_code, attempt)
+                if not check_connectivity()[0]:
+                    wait_for_internet(label="token-refresh")
+                else:
+                    time.sleep(escalating_backoff(attempt))
+                continue
+            break
+
         data = resp.json()
 
         if "access_token" not in data:

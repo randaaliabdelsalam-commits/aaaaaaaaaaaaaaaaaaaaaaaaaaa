@@ -8,6 +8,7 @@ the production infinite-retry policy:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -33,12 +34,42 @@ def escalating_backoff(attempt: int) -> float:
 
 
 def ping_internet(timeout: float = 5.0) -> bool:
-    """Return *True* if the machine can reach the public internet."""
-    try:
-        requests.get("https://google.com", timeout=timeout, allow_redirects=True)
-        return True
-    except Exception:
-        return False
+    """Backward-compatible internet check wrapper."""
+    ok, _ = check_connectivity(timeout=timeout)
+    return ok
+
+
+def connectivity_endpoints() -> tuple[str, ...]:
+    """Return ordered health-check endpoints, configurable via env."""
+    value = os.environ.get("CONNECTIVITY_CHECK_URLS", "").strip()
+    if value:
+        parsed = tuple(item.strip() for item in value.split(",") if item.strip())
+        if parsed:
+            return parsed
+    return (
+        "https://accounts.zoho.com",
+        "https://creator.zoho.com",
+        "https://google.com",
+    )
+
+
+def check_connectivity(
+    timeout: float = 5.0,
+    endpoints: tuple[str, ...] | None = None,
+) -> tuple[bool, tuple[str, str] | None]:
+    """Check connectivity using ordered endpoint fallback.
+
+    Returns (is_online, last_failure) where last_failure is `(endpoint, reason)`.
+    """
+    checks = endpoints or connectivity_endpoints()
+    last_failure: tuple[str, str] | None = None
+    for endpoint in checks:
+        try:
+            requests.get(endpoint, timeout=timeout, allow_redirects=True)
+            return True, None
+        except Exception as exc:  # noqa: BLE001 - broad by design for network checks
+            last_failure = (endpoint, str(exc))
+    return False, last_failure
 
 
 def wait_for_internet(
@@ -53,15 +84,24 @@ def wait_for_internet(
     attempt = 0
     while True:
         attempt += 1
-        if ping_internet():
+        ok, failure = check_connectivity()
+        if ok:
             if attempt > 1:
                 log.info("%s: connectivity restored after %d attempts", label, attempt)
             return
         delay = escalating_backoff(attempt)
-        log.warning(
-            "%s: no connectivity (attempt %d), retrying in %.0f s …",
-            label, attempt, delay,
-        )
+        if failure is None:
+            log.warning("%s: no connectivity (attempt %d), retrying in %.0f s …", label, attempt, delay)
+        else:
+            endpoint, reason = failure
+            log.warning(
+                "%s: no connectivity via %s (attempt %d): %s; retrying in %.0f s …",
+                label,
+                endpoint,
+                attempt,
+                reason,
+                delay,
+            )
         if stop_event is not None:
             if stop_event.wait(delay):
                 raise InterruptedError(f"{label}: shutdown during connectivity wait")
