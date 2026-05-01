@@ -251,3 +251,44 @@ def test_retryable_zoho_error_sets_next_attempt_without_dead():
     assert captured["delay"] == 7.5
     assert captured["id"] == 1
     assert "limited" in captured["err"]
+
+
+def test_delete_falls_back_to_external_key_lookup_when_map_missing():
+    conn = FakeConnection()
+    conn.register("SYNC_EVENTS", _events_handler([_new_event(op="D")]))
+    conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
+    conn.register("FROM   sk1mf", lambda *_: (SK1MF_COLS, [SAMPLE_SK1MF_ROW]))
+    conn.register("FROM ZOHO_MAP", lambda *_: ([], []))
+    conn.register("DELETE FROM ZOHO_MAP", lambda *_: None)
+    conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
+
+    pool, zoho, w = _make_worker(conn=conn)
+    zoho.records["Items_Data"] = {"REC-88": {"External_Key": "1-2025-ITM-1"}}
+    w.run_once()
+
+    assert ("lookup", "Items_Data", "External_Key", "1-2025-ITM-1", 0) in zoho.calls
+    assert ("delete", "Items_Data", "REC-88", 0) in zoho.calls
+
+
+def test_create_then_delete_same_source_yields_zero_zoho_lookup_matches():
+    conn = FakeConnection()
+    conn.register("SYNC_EVENTS", _events_handler([_new_event(eid=1, op="I")]))
+    conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
+    conn.register("FROM   sk1mf", lambda *_: (SK1MF_COLS, [SAMPLE_SK1MF_ROW]))
+    conn.register("FROM ZOHO_MAP", lambda *_: ([], []))
+    conn.register("FROM   ps33mf", lambda *_: (PS33_COLS, [SAMPLE_PS33_ROW]))
+    conn.register("MERGE INTO ZOHO_MAP", lambda *_: None)
+    conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
+
+    pool, zoho, w = _make_worker(conn=conn)
+    w.run_once()
+
+    conn.register("SYNC_EVENTS", _events_handler([_new_event(eid=2, op="D")]))
+    conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
+    conn.register("FROM   sk1mf", lambda *_: (SK1MF_COLS, [SAMPLE_SK1MF_ROW]))
+    conn.register("FROM ZOHO_MAP", lambda *_: ([], []))
+    conn.register("DELETE FROM ZOHO_MAP", lambda *_: None)
+    conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
+    w.run_once()
+
+    assert zoho.find_record_id_by_external_key("Items_Data", "External_Key", "1-2025-ITM-1", 0) is None

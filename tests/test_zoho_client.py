@@ -155,3 +155,21 @@ def test_delete_record_uses_delete_to_report_url():
     method, url = session.request.call_args.args
     assert method == "DELETE"
     assert url.endswith("/report/Items_Report/ID-7")
+
+
+def test_delete_404_treated_as_idempotent_success():
+    session = MagicMock()
+    session.request.return_value = _resp(404, {"error": "missing"})
+    c, _, _ = _client(session)
+    c.delete_record("Items_Report", "ID-404", priority=0)
+
+
+def test_find_record_id_by_external_key_uses_report_criteria_and_returns_id():
+    session = MagicMock()
+    session.request.return_value = _resp(200, {"data": [{"ID": "RID-1", "External_Key": "K"}]})
+    c, _, _ = _client(session)
+    rid = c.find_record_id_by_external_key("Items_Report", "External_Key", "K", priority=0)
+    assert rid == "RID-1"
+    method, url = session.request.call_args.args
+    assert method == "GET"
+    assert "criteria=(External_Key == \"K\")" in url

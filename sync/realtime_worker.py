@@ -178,6 +178,33 @@ class RealtimeWorker:
                 st=new_status, a=new_attempts, err=str(e)[:3900], id=event_id,
             )
 
+
+    def _delete_with_reconciliation(self, cursor, source_table: str, report: str,
+                                    key_params: dict[str, Any], external_key: str) -> None:
+        existing_id = zoho_map.lookup(cursor, source_table, **key_params)
+        if existing_id:
+            try:
+                self._zoho.delete_record(report, existing_id, priority=ZohoTrafficGate.REALTIME)
+            except ZohoError as e:
+                if e.status_code != 404:
+                    raise
+            zoho_map.delete(cursor, source_table, **key_params)
+            return
+
+        found_id = self._zoho.find_record_id_by_external_key(
+            report, external_key, self._external_value(source_table, key_params),
+            priority=ZohoTrafficGate.REALTIME,
+        )
+        if found_id:
+            self._zoho.delete_record(report, found_id, priority=ZohoTrafficGate.REALTIME)
+        zoho_map.delete(cursor, source_table, **key_params)
+
+    @staticmethod
+    def _external_value(source_table: str, key_params: dict[str, Any]) -> str:
+        if source_table == "ITEMS":
+            return f"{key_params['k_cp']}-{key_params['k_yr']}-{key_params['k_code']}"
+        return f"{key_params['k_cp']}-{key_params['k_yr']}-{key_params['k_bn']}"
+
     # --- per-form handlers
     def _sync_items(self, cursor, ev: dict[str, Any]) -> None:
         cp, yr, code = ev["k_cp"], ev["k_yr"], ev["k_code"]
@@ -188,20 +215,20 @@ class RealtimeWorker:
                                       k_cp=cp, k_yr=yr, k_code=code)
 
         if ev["op"] == "D" and ev["source_table"] == "SK1MF":
-            if existing_id:
-                self._zoho.delete_record(self._form_items, existing_id,
-                                         priority=ZohoTrafficGate.REALTIME)
-                zoho_map.delete(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code)
+            self._delete_with_reconciliation(
+                cursor, "ITEMS", self._form_items,
+                {"k_cp": cp, "k_yr": yr, "k_code": code}, "External_Key"
+            )
             return
 
         if row_dict is None:
             # No SK1MF row means the source item is gone or the event is
             # orphaned.  In that case we mirror deletion only if Zoho already
             # has a mapped record for this exact key.
-            if existing_id:
-                self._zoho.delete_record(self._form_items, existing_id,
-                                         priority=ZohoTrafficGate.REALTIME)
-                zoho_map.delete(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code)
+            self._delete_with_reconciliation(
+                cursor, "ITEMS", self._form_items,
+                {"k_cp": cp, "k_yr": yr, "k_code": code}, "External_Key"
+            )
             return
 
         # PS33MF only supplies optional filter fields for Items_Data.  If it is
@@ -238,19 +265,19 @@ class RealtimeWorker:
         existing_id = zoho_map.lookup(cursor, "GRBRF",
                                       k_cp=cp, k_yr=yr, k_bn=bn)
         if ev["op"] == "D":
-            if existing_id:
-                self._zoho.delete_record(self._form_branches, existing_id,
-                                         priority=ZohoTrafficGate.REALTIME)
-                zoho_map.delete(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn)
+            self._delete_with_reconciliation(
+                cursor, "GRBRF", self._form_branches,
+                {"k_cp": cp, "k_yr": yr, "k_bn": bn}, "External_Key"
+            )
             return
 
         cursor.execute(BRANCHES_SELECT, cp=cp, yr=yr, bn=bn)
         row = cursor.fetchone()
         if row is None:
-            if existing_id:
-                self._zoho.delete_record(self._form_branches, existing_id,
-                                         priority=ZohoTrafficGate.REALTIME)
-                zoho_map.delete(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn)
+            self._delete_with_reconciliation(
+                cursor, "GRBRF", self._form_branches,
+                {"k_cp": cp, "k_yr": yr, "k_bn": bn}, "External_Key"
+            )
             return
 
         payload = branches_payload(_row_to_dict(cursor, row))

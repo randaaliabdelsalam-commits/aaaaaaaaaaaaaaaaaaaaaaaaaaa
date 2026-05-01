@@ -103,15 +103,27 @@ class FakeZoho:
         self.calls: list[tuple[str, ...]] = []
         self.next_id = 1
         self.fail_on: list[str] = []
+        self.records: dict[str, dict[str, dict]] = {}
 
     def add_record(self, form, payload, priority):
         self.calls.append(("add", form, dict(payload), priority))
         rid = f"REC-{self.next_id}"
         self.next_id += 1
+        self.records.setdefault(form, {})[rid] = dict(payload)
         return rid
 
     def update_record(self, report, record_id, payload, priority):
         self.calls.append(("update", report, record_id, dict(payload), priority))
+        if report in self.records and record_id in self.records[report]:
+            self.records[report][record_id] = dict(payload)
 
     def delete_record(self, report, record_id, priority):
         self.calls.append(("delete", report, record_id, priority))
+        self.records.get(report, {}).pop(record_id, None)
+
+    def find_record_id_by_external_key(self, report, field, value, priority):
+        self.calls.append(("lookup", report, field, value, priority))
+        for rid, payload in self.records.get(report, {}).items():
+            if payload.get(field) == value:
+                return rid
+        return None
