@@ -42,6 +42,19 @@ CREATE UNIQUE INDEX uq_zoho_map ON ZOHO_MAP(
     source_table, NVL(k_cp, -1), NVL(k_yr, -1), NVL(k_code, '~'), NVL(k_bn, -1)
 );
 
+-- Short-lived create-path claim lock to prevent duplicate creates across workers.
+CREATE TABLE ZOHO_SYNC_CLAIMS (
+    source_table VARCHAR2(10) NOT NULL,
+    k_cp         NUMBER(3),
+    k_yr         NUMBER(4),
+    k_code       VARCHAR2(20),
+    k_bn         NUMBER(3),
+    claimed_at   TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL
+);
+CREATE UNIQUE INDEX uq_zoho_sync_claims ON ZOHO_SYNC_CLAIMS(
+    source_table, NVL(k_cp, -1), NVL(k_yr, -1), NVL(k_code, '~'), NVL(k_bn, -1)
+);
+
 -- Backfill resume cursor.
 CREATE TABLE BACKFILL_CHECKPOINT (
     source_table VARCHAR2(10) PRIMARY KEY,

@@ -65,7 +65,9 @@ def test_insert_event_calls_add_and_upserts_map():
     conn.register("FROM   sk1mf", lambda *_: (SK1MF_COLS, [SAMPLE_SK1MF_ROW]))
     conn.register("FROM ZOHO_MAP", lambda *_: ([], []))           # not present
     conn.register("FROM   ps33mf", lambda *_: (PS33_COLS, [SAMPLE_PS33_ROW]))
+    conn.register("MERGE INTO ZOHO_SYNC_CLAIMS", lambda *_: None)
     conn.register("MERGE INTO ZOHO_MAP", lambda *_: None)
+    conn.register("DELETE FROM ZOHO_SYNC_CLAIMS", lambda *_: None)
     conn.register("UPDATE SYNC_EVENTS", lambda *_: None)         # mark DONE
 
     pool, zoho, w = _make_worker(conn=conn)
@@ -92,7 +94,9 @@ def test_sk1mf_only_insert_still_adds_exact_event_item():
     conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
     conn.register("FROM   sk1mf", sk1mf_handler)
     conn.register("FROM ZOHO_MAP", lambda *_: ([], []))
+    conn.register("MERGE INTO ZOHO_SYNC_CLAIMS", lambda *_: None)
     conn.register("MERGE INTO ZOHO_MAP", lambda *_: None)
+    conn.register("DELETE FROM ZOHO_SYNC_CLAIMS", lambda *_: None)
     conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
 
     pool, zoho, w = _make_worker(conn=conn)
@@ -215,6 +219,7 @@ def test_failure_increments_attempts_and_marks_dead_after_max():
     conn.register("UPDATE SYNC_EVENTS", lambda *_: None)
     conn.register("FROM   sk1mf", lambda *_: (SK1MF_COLS, [SAMPLE_SK1MF_ROW]))
     conn.register("FROM ZOHO_MAP", lambda *_: ([], []))
+    conn.register("MERGE INTO ZOHO_SYNC_CLAIMS", lambda *_: None)
     captured: dict = {}
 
     def fail_update(_sql, params):
@@ -244,6 +249,7 @@ def test_retryable_zoho_error_sets_next_attempt_without_dead():
         captured.update(params)
 
     conn.register("UPDATE SYNC_EVENTS SET status='NEW'", defer_update)
+    conn.register("DELETE FROM ZOHO_SYNC_CLAIMS", lambda *_: None)
 
     pool, _, w = _make_worker(conn=conn, zoho=ThrottledZoho())
     w.run_once()

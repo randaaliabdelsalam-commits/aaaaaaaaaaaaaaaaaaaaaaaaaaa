@@ -92,6 +92,16 @@ class ZohoClient:
             priority=priority,
         )
 
+    def find_record_by_criteria(self, report: str, criteria: str, priority: int) -> str | None:
+        url = f"{self._base}/{self._owner}/{self._app}/report/{report}"
+        resp = self._call("GET", f"{url}?criteria={criteria}", None, priority=priority)
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if not data:
+            return None
+        first = data[0] if isinstance(data, list) else data
+        rid = first.get("ID") or first.get("id") or first.get("zc_record_id")
+        return str(rid) if rid else None
+
     # -- core retry loop (infinite for network / 5xx)
     def _call(
         self, method: str, url: str, body: dict | None, priority: int

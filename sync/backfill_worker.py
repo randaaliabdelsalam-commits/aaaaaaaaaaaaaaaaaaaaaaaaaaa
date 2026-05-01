@@ -158,17 +158,37 @@ class BackfillWorker:
     def _sync_one(self, conn, source_key: str, form: str, payload: dict,
                   **keys) -> None:
         cur = conn.cursor()
-        if zoho_map.lookup(cur, source_key, **keys) is not None:
-            return  # already synced (resume / retry)
+        existing = zoho_map.lookup(cur, source_key, **keys)
+        if existing is not None:
+            self._zoho.update_record(form, existing, payload,
+                                     priority=ZohoTrafficGate.BACKFILL)
+            return
+        if not zoho_map.claim(cur, source_key, **keys):
+            return
         try:
-            zoho_id = self._zoho.add_record(form, payload,
-                                            priority=ZohoTrafficGate.BACKFILL)
+            resolved = self._resolve_existing(form, source_key, keys,
+                                              ZohoTrafficGate.BACKFILL)
+            if resolved is not None:
+                self._zoho.update_record(form, resolved, payload,
+                                         priority=ZohoTrafficGate.BACKFILL)
+                zoho_map.upsert(cur, source_key, resolved, **keys)
+                return
+            zoho_id = self._zoho.add_record(form, payload, priority=ZohoTrafficGate.BACKFILL)
+            zoho_map.upsert(cur, source_key, zoho_id, **keys)
         except ZohoRetryableError:
             raise
         except ZohoError as exc:
             log.warning("backfill skip %s %s: %s", source_key, keys, exc)
             return
-        zoho_map.upsert(cur, source_key, zoho_id, **keys)
+        finally:
+            zoho_map.release_claim(cur, source_key, **keys)
+
+    def _resolve_existing(self, form: str, source_key: str, keys: dict[str, Any], priority: int) -> str | None:
+        if source_key == "ITEMS":
+            crit = f"(Company_Number == {keys['k_cp']}) && (Year == {keys['k_yr']}) && (Item_Code == \"{keys['k_code']}\")"
+        else:
+            crit = f"(Company_Number == {keys['k_cp']}) && (Year == {keys['k_yr']}) && (Branch_Number == {keys['k_bn']})"
+        return self._zoho.find_record_by_criteria(form, crit, priority=priority)
 
     def _read_checkpoint(self, table: str, fields: tuple[str, ...]) -> tuple:
         with self._pool.connection() as conn:
