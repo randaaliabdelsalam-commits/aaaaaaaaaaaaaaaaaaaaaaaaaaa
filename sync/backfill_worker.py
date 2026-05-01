@@ -166,6 +166,8 @@ class BackfillWorker:
         if not zoho_map.claim(cur, source_key, **keys):
             return
         try:
+            zoho_id = self._zoho.add_record(form, payload,
+                                            priority=ZohoTrafficGate.BACKFILL)
             resolved = self._resolve_existing(form, source_key, keys,
                                               ZohoTrafficGate.BACKFILL)
             if resolved is not None:
