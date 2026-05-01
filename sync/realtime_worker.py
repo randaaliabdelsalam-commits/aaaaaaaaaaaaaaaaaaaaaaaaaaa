@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import hashlib
+import json
 from typing import Any
 
 from . import zoho_map
@@ -151,13 +153,13 @@ class RealtimeWorker:
         event_id = ev["id"]
         try:
             if ev["source_table"] == "GRBRF":
-                self._sync_branches(cursor, ev)
+                src_hash = self._sync_branches(cursor, ev)
             else:  # SK1MF or PS33MF -> sync the corresponding Items_Data row
-                self._sync_items(cursor, ev)
+                src_hash = self._sync_items(cursor, ev)
             cursor.execute(
                 "UPDATE SYNC_EVENTS SET status='DONE', finished_at=SYSTIMESTAMP, "
-                "last_error=NULL, next_attempt_at=NULL WHERE id=:id",
-                id=event_id,
+                "last_error=NULL, next_attempt_at=NULL, last_source_hash=:h WHERE id=:id",
+                id=event_id, h=src_hash,
             )
         except ZohoRetryableError as e:
             delay = e.retry_after if e.retry_after is not None else 60.0
@@ -179,7 +181,7 @@ class RealtimeWorker:
             )
 
     # --- per-form handlers
-    def _sync_items(self, cursor, ev: dict[str, Any]) -> None:
+    def _sync_items(self, cursor, ev: dict[str, Any]) -> str | None:
         cp, yr, code = ev["k_cp"], ev["k_yr"], ev["k_code"]
         cursor.execute(ITEMS_SELECT, cp=cp, yr=yr, code=code)
         row = cursor.fetchone()
@@ -192,7 +194,7 @@ class RealtimeWorker:
                 self._zoho.delete_record(self._form_items, existing_id,
                                          priority=ZohoTrafficGate.REALTIME)
                 zoho_map.delete(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code)
-            return
+            return None
 
         if row_dict is None:
             # No SK1MF row means the source item is gone or the event is
@@ -202,7 +204,7 @@ class RealtimeWorker:
                 self._zoho.delete_record(self._form_items, existing_id,
                                          priority=ZohoTrafficGate.REALTIME)
                 zoho_map.delete(cursor, "ITEMS", k_cp=cp, k_yr=yr, k_code=code)
-            return
+            return None
 
         # PS33MF only supplies optional filter fields for Items_Data.  If it is
         # missing, we still send the SK1MF item to Zoho and leave those filter
@@ -216,13 +218,14 @@ class RealtimeWorker:
         else:
             row_dict.update(_row_to_dict(cursor, ps33_row))
 
+        src_hash = _source_hash(row_dict)
         payload = items_payload(row_dict)
 
         if existing_id:
             try:
                 self._zoho.update_record(self._form_items, existing_id, payload,
                                          priority=ZohoTrafficGate.REALTIME)
-                return
+                return src_hash
             except ZohoError as e:
                 if e.status_code != 404:
                     raise
@@ -232,8 +235,9 @@ class RealtimeWorker:
                                        priority=ZohoTrafficGate.REALTIME)
         zoho_map.upsert(cursor, "ITEMS", new_id,
                         k_cp=cp, k_yr=yr, k_code=code)
+        return src_hash
 
-    def _sync_branches(self, cursor, ev: dict[str, Any]) -> None:
+    def _sync_branches(self, cursor, ev: dict[str, Any]) -> str | None:
         cp, yr, bn = ev["k_cp"], ev["k_yr"], ev["k_bn"]
         existing_id = zoho_map.lookup(cursor, "GRBRF",
                                       k_cp=cp, k_yr=yr, k_bn=bn)
@@ -242,7 +246,7 @@ class RealtimeWorker:
                 self._zoho.delete_record(self._form_branches, existing_id,
                                          priority=ZohoTrafficGate.REALTIME)
                 zoho_map.delete(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn)
-            return
+            return None
 
         cursor.execute(BRANCHES_SELECT, cp=cp, yr=yr, bn=bn)
         row = cursor.fetchone()
@@ -251,14 +255,16 @@ class RealtimeWorker:
                 self._zoho.delete_record(self._form_branches, existing_id,
                                          priority=ZohoTrafficGate.REALTIME)
                 zoho_map.delete(cursor, "GRBRF", k_cp=cp, k_yr=yr, k_bn=bn)
-            return
+            return None
 
-        payload = branches_payload(_row_to_dict(cursor, row))
+        row_payload = _row_to_dict(cursor, row)
+        src_hash = _source_hash(row_payload)
+        payload = branches_payload(row_payload)
         if existing_id:
             try:
                 self._zoho.update_record(self._form_branches, existing_id, payload,
                                          priority=ZohoTrafficGate.REALTIME)
-                return
+                return src_hash
             except ZohoError as e:
                 if e.status_code != 404:
                     raise
@@ -268,3 +274,9 @@ class RealtimeWorker:
                                        priority=ZohoTrafficGate.REALTIME)
         zoho_map.upsert(cursor, "GRBRF", new_id,
                         k_cp=cp, k_yr=yr, k_bn=bn)
+        return src_hash
+
+
+def _source_hash(payload: dict[str, Any]) -> str:
+    blob = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()

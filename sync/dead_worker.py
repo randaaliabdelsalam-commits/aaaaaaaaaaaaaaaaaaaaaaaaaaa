@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import hashlib
+import json
 from typing import Any
+
+from . import zoho_map
+from .realtime_worker import BRANCHES_SELECT, ITEMS_SELECT, PS33_SELECT, _row_to_dict
 
 log = logging.getLogger(__name__)
 
@@ -50,14 +55,74 @@ class DeadRetryWorker:
         log.info("dead-retry worker stopped")
 
     def _resurrect_dead(self) -> int:
-        """Reset all DEAD events back to NEW with attempts=0."""
+        """Reprocess DEAD events with per-row decisions."""
         with self._pool.connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE SYNC_EVENTS "
-                "SET status = 'NEW', attempts = 0, next_attempt_at = NULL "
-                "WHERE status = 'DEAD'"
+                "SELECT id, source_table, k_cp, k_yr, k_code, k_bn, last_source_hash "
+                "FROM SYNC_EVENTS WHERE status = 'DEAD'"
             )
-            count = cursor.rowcount
+            cols = [c[0].lower() for c in cursor.description]
+            events = [dict(zip(cols, r)) for r in cursor.fetchall()]
+            count = 0
+            for ev in events:
+                count += self._decide_event(cursor, ev)
             conn.commit()
             return count
+
+    def _decide_event(self, cursor, ev: dict[str, Any]) -> int:
+        source_hash = self._current_source_hash(cursor, ev)
+        existing_id = self._existing_zoho_map(cursor, ev)
+        if source_hash is not None:
+            if source_hash != ev.get("last_source_hash"):
+                cursor.execute(
+                    "UPDATE SYNC_EVENTS SET status='NEW', attempts=0, "
+                    "next_attempt_at=NULL, last_error=NULL WHERE id=:id",
+                    id=ev["id"],
+                )
+                return 1
+            return 0
+        if existing_id:
+            cursor.execute(
+                "UPDATE SYNC_EVENTS SET status='NEW', op='D', attempts=0, "
+                "next_attempt_at=NULL, last_error=NULL WHERE id=:id",
+                id=ev["id"],
+            )
+            return 1
+        cursor.execute(
+            "UPDATE SYNC_EVENTS SET status='DONE', finished_at=SYSTIMESTAMP, "
+            "last_error='RESOLVED: source row and zoho map both absent', "
+            "next_attempt_at=NULL WHERE id=:id",
+            id=ev["id"],
+        )
+        return 1
+
+    def _existing_zoho_map(self, cursor, ev: dict[str, Any]) -> str | None:
+        if ev["source_table"] == "GRBRF":
+            return zoho_map.lookup(cursor, "GRBRF", k_cp=ev["k_cp"], k_yr=ev["k_yr"],
+                                   k_bn=ev["k_bn"])
+        return zoho_map.lookup(cursor, "ITEMS", k_cp=ev["k_cp"], k_yr=ev["k_yr"],
+                               k_code=ev["k_code"])
+
+    def _current_source_hash(self, cursor, ev: dict[str, Any]) -> str | None:
+        if ev["source_table"] == "GRBRF":
+            cursor.execute(BRANCHES_SELECT, cp=ev["k_cp"], yr=ev["k_yr"], bn=ev["k_bn"])
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            payload = _row_to_dict(cursor, row)
+        else:
+            cursor.execute(ITEMS_SELECT, cp=ev["k_cp"], yr=ev["k_yr"], code=ev["k_code"])
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            payload = _row_to_dict(cursor, row)
+            cursor.execute(PS33_SELECT, cp=ev["k_cp"], yr=ev["k_yr"], code=ev["k_code"])
+            ps = cursor.fetchone()
+            if ps is None:
+                payload["PS33M2"] = None
+                payload["PS33M4"] = None
+            else:
+                payload.update(_row_to_dict(cursor, ps))
+        blob = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()

@@ -15,6 +15,7 @@ CREATE TABLE SYNC_EVENTS (
     enqueued_at  TIMESTAMP    DEFAULT SYSTIMESTAMP NOT NULL,
     status       VARCHAR2(10) DEFAULT 'NEW' NOT NULL,  -- NEW | INFLIGHT | DONE | DEAD
     attempts     NUMBER       DEFAULT 0 NOT NULL,
+    last_source_hash VARCHAR2(64),
     last_error   VARCHAR2(4000),
     next_attempt_at TIMESTAMP,
     picked_at    TIMESTAMP,
